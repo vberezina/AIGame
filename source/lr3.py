@@ -1,0 +1,156 @@
+import pygame
+import random
+
+# --- ГЛОБАЛЬНЫЕ НАСТРОЙКИ ---
+WIDTH, HEIGHT = 800, 600
+FPS = 60
+
+# Цветовая кодировка состояний (упрощает отладку поведения ИИ)
+COLOR_PATROL = (0, 255, 0)   # Зеленый - спокойствие
+COLOR_CHASE = (255, 165, 0)  # Оранжевый - тревога/погоня
+COLOR_ATTACK = (255, 0, 0)   # Красный - активное действие
+COLOR_TEXT = (255, 255, 255)
+
+class Guard:
+    """Класс охранника, управляемого конечным автоматом (FSM)."""
+    
+    def __init__(self, waypoints):
+        # Преобразуем кортежи координат в объекты Vector2 для удобства вычислений
+        self.waypoints = [pygame.Vector2(wp) for wp in waypoints]
+        self.current_wp_idx = 0  # Индекс текущей точки патрулирования
+        self.pos = pygame.Vector2(self.waypoints[0]) # Стартовая позиция
+        
+        # Свойства ИИ
+        self.state = "PATROL"  # Текущее состояние автомата
+        self.speed = 2.0       # Базовая скорость
+        self.radius = 15       # Физический размер агента
+        
+        # Настройки сенсоров (расстояния срабатывания логики)
+        self.detection_range = 150  # Радиус, в котором ИИ замечает игрока
+        self.attack_range = 50     # Радиус перехода к атаке
+        self.lose_range = 300      # Расстояние, при котором ИИ теряет интерес
+
+    def update(self, player_pos):
+        """Главный метод обновления логики ИИ в каждом кадре."""
+        player_vec = pygame.Vector2(player_pos)
+        # Вычисляем расстояние между NPC и игроком (курсором)
+        dist_to_player = self.pos.distance_to(player_vec)
+
+        # --- БЛОК УПРАВЛЕНИЯ СОСТОЯНИЯМИ (FSM Logic) ---
+        
+        if self.state == "PATROL":
+            self._behavior_patrol()
+            # Проверка перехода: если игрок слишком близко — преследуем
+            if dist_to_player < self.detection_range:
+                self.state = "CHASE"
+
+        elif self.state == "CHASE":
+            self._behavior_chase(player_vec)
+            # Проверка перехода 1: если игрок убежал за предел видимости — возвращаемся к патрулю
+            if dist_to_player > self.lose_range:
+                self.state = "PATROL"
+            # Проверка перехода 2: если подошли вплотную — атакуем
+            elif dist_to_player < self.attack_range:
+                self.state = "ATTACK"
+
+        elif self.state == "ATTACK":
+            self._behavior_attack()
+            # Гистерезис: выходим из атаки только если игрок отошел чуть дальше, 
+            # чем радиус входа (предотвращает мерцание состояния на границе)
+            if dist_to_player > self.attack_range + 20:
+                self.state = "CHASE"
+
+    def _behavior_patrol(self):
+        """Логика перемещения между контрольными точками."""
+        target = self.waypoints[self.current_wp_idx]
+        direction = target - self.pos # Вектор в сторону текущей цели
+        
+        # Проверяем, достигли ли мы точки (с небольшой погрешностью в 5 пикселей)
+        if direction.length() < 5:
+            # Переключаемся на следующую точку по кругу
+            self.current_wp_idx = (self.current_wp_idx + 1) % len(self.waypoints)
+        else:
+            # Движемся к цели: нормализуем вектор (длина 1) и умножаем на скорость
+            self.pos += direction.normalize() * self.speed
+
+    def _behavior_chase(self, target_pos):
+        """Логика сокращения дистанции с игроком."""
+        direction = target_pos - self.pos
+        if direction.length() > 0:
+            # В состоянии погони ИИ движется быстрее (множитель 1.5)
+            self.pos += direction.normalize() * (self.speed * 1.5)
+
+    def _behavior_attack(self):
+        """Логика поведения в бою (визуальная имитация)."""
+        # Имитируем "ярость" или атаку через легкое дрожание координат (Random Shake)
+        self.pos += pygame.Vector2(random.uniform(-2, 2), random.uniform(-2, 2))
+
+    def draw(self, surface):
+        """Отрисовка агента и его визуальных сенсоров."""
+        
+        # Определяем цвет в зависимости от состояния
+        current_color = COLOR_PATROL
+        if self.state == "CHASE": current_color = COLOR_CHASE
+        if self.state == "ATTACK": current_color = COLOR_ATTACK
+
+        # 1. Отрисовка зоны видимости (полупрозрачный круг)
+        # Создаем временную поверхность с поддержкой альфа-канала (прозрачности)
+        s = pygame.Surface((self.detection_range * 2, self.detection_range * 2), pygame.SRCALPHA)
+        # Четвертый аргумент (30) — это уровень прозрачности (0-255)
+        pygame.draw.circle(s, (*current_color, 30), (self.detection_range, self.detection_range), self.detection_range)
+        # Накладываем прозрачный круг на основной экран
+        surface.blit(s, (self.pos.x - self.detection_range, self.pos.y - self.detection_range))
+
+        # 2. Отрисовка самого охранника (центральный круг)
+        pygame.draw.circle(surface, current_color, (int(self.pos.x), int(self.pos.y)), self.radius)
+        # Контур для лучшей видимости
+        pygame.draw.circle(surface, (255, 255, 255), (int(self.pos.x), int(self.pos.y)), self.radius, 2)
+        
+        # 3. Визуализация маршрута патрулирования (серые точки)
+        for wp in self.waypoints:
+            pygame.draw.circle(surface, (100, 100, 100), (int(wp.x), int(wp.y)), 4)
+
+def main():
+    pygame.init()
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_caption("Лабораторная №3: Конечный автомат (FSM)")
+    clock = pygame.time.Clock()
+    font = pygame.font.SysFont("Arial", 18, bold=True)
+
+    # Задаем прямоугольный маршрут патрулирования
+    path = [(150, 150), (650, 150), (650, 450), (150, 450)]
+    guard = Guard(path)
+
+    running = True
+    while running:
+        screen.fill((60, 60, 60)) # Темно-серый фон
+        mouse_pos = pygame.mouse.get_pos()
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+
+        # Обновляем логику охранника, передавая ему координаты игрока (мыши)
+        guard.update(mouse_pos)
+        
+        # Рисуем все объекты
+        guard.draw(screen)
+        
+        # Отрисовка игрока (синий маркер)
+        pygame.draw.circle(screen, (0, 180, 255), mouse_pos, 10)
+
+        # Вывод интерфейса (HUD)
+        state_surface = font.render(f"ТЕКУЩЕЕ СОСТОЯНИЕ: {guard.state}", True, COLOR_TEXT)
+        screen.blit(state_surface, (20, 20))
+        
+        info_text = "Приблизитесь к охраннику, чтобы он начал погоню"
+        info_surface = font.render(info_text, True, (180, 180, 180))
+        screen.blit(info_surface, (20, HEIGHT - 40))
+
+        pygame.display.flip() # Обновляем кадр
+        clock.tick(FPS)       # Держим стабильные 60 кадров в секунду
+
+    pygame.quit()
+
+if __name__ == "__main__":
+    main()
